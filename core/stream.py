@@ -1,5 +1,5 @@
 """
-Core stream manager — pytgcalls 3.0.0.dev28 + pyrogram 2.x
+Core stream manager — pytgcalls 3.0.0+ / 2.x + pyrogram 2.x
 
 Key responsibilities:
 - join / leave / change group call streams
@@ -15,11 +15,6 @@ import time
 from typing import Optional, TYPE_CHECKING
 
 from pytgcalls import PyTgCalls
-from pytgcalls.exceptions import (
-    AlreadyJoinedError,
-    NoActiveGroupCall,
-    NotInGroupCallError,
-)
 from pytgcalls.types import (
     AudioQuality,
     MediaStream,
@@ -237,12 +232,20 @@ async def play(
 
     try:
         await call.join_group_call(chat_id, media)
-    except AlreadyJoinedError:
-        await call.change_stream(chat_id, media)
-    except NoActiveGroupCall:
-        raise RuntimeError("No active voice chat in this group. Start one first.")
-    except Exception:
-        raise
+    except Exception as e:
+        err = str(e).lower()
+        if "already" in err or "join" in err or "groupcallparticipant" in err:
+            try:
+                await call.change_stream(chat_id, media)
+            except Exception as ex:
+                raise RuntimeError(f"Could not change stream: {ex}")
+        elif "active" in err or "not found" in err:
+            raise RuntimeError("No active voice chat in this group. Start one first.")
+        else:
+            try:
+                await call.change_stream(chat_id, media)
+            except Exception:
+                raise e
 
     if seek > 0:
         stream.seek_to(seek)
@@ -297,10 +300,11 @@ async def stop(chat_id: int, client: Optional["Client"] = None) -> None:
     _cleanup_chat(chat_id)
     try:
         await call.leave_group_call(chat_id)
-    except (NoActiveGroupCall, NotInGroupCallError):
-        pass
     except Exception as e:
-        log.warning(f"stop(): leave_group_call error in {chat_id}: {e}")
+        err = str(e).lower()
+        if "not found" not in err and "no active" not in err and "not in" not in err:
+            log.warning(f"stop(): leave_group_call error in {chat_id}: {e}")
+            
     await db.clear_queue(chat_id)
     c = client or _bot_client
     if c:
@@ -453,6 +457,7 @@ async def _handle_stream_end(chat_id: int) -> None:
         vc247 = await db.get_setting(chat_id, "vc247")
         if vc247:
             return  # Stay in VC, wait for next play command
+        
         # Idle leave
         async def _idle_leave(cid: int) -> None:
             if not _active_streams.get(cid):
@@ -466,6 +471,7 @@ async def _handle_stream_end(chat_id: int) -> None:
                         await _bot_client.send_message(cid, "🛑 **Qᴜᴇᴜᴇ ᴇɴᴅᴇᴅ.** Bᴏᴛ ʜᴀs ʟᴇғᴛ ᴛʜᴇ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ.")
                     except Exception:
                         pass
+                        
         start_idle_timer(chat_id, _idle_leave)
         return
 
@@ -634,4 +640,4 @@ def _cleanup_chat(chat_id: int) -> None:
     _cancel_idle(chat_id)
     _cancel_np_task(chat_id)
     set_inactive(chat_id)
-    
+            
