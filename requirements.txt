@@ -1,6 +1,6 @@
 pyrogram==2.0.106
 TgCrypto==1.2.5
-git+https://github.com/pytgcalls/pytgcalls
+pytgcalls==2.0.0
 yt-dlp>=2024.1.1
 Pillow>=10.0.0
 httpx[http2]>=0.27.0
