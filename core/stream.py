@@ -18,7 +18,7 @@ from pytgcalls import PyTgCalls
 from pytgcalls.types import (
     AudioQuality,
     MediaStream,
-    VideoParameters,
+    VideoQuality,
 )
 
 import database as db
@@ -200,15 +200,14 @@ def _build_media_stream(
     if video:
         return MediaStream(
             track["url"],
-            audio_quality=AudioQuality.STUDIO,
-            video_parameters=VideoParameters(1280, 720, 30),
+            audio_parameters=AudioQuality.STUDIO,
+            video_parameters=VideoQuality.HD_720p,
             ffmpeg_parameters=ffmpeg_extra or None,
         )
 
     return MediaStream(
         track["url"],
-        audio_quality=AudioQuality.STUDIO,
-        video_only=False,
+        audio_parameters=AudioQuality.STUDIO,
         ffmpeg_parameters=ffmpeg_extra or None,
     )
 
@@ -640,4 +639,4 @@ def _cleanup_chat(chat_id: int) -> None:
     _cancel_idle(chat_id)
     _cancel_np_task(chat_id)
     set_inactive(chat_id)
-            
+        
