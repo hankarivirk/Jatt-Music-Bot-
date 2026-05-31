@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation \
     gcc \
     g++ \
+    git \
     libffi-dev \
     libssl-dev \
     make \
