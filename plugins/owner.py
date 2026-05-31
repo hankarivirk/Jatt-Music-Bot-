@@ -13,16 +13,15 @@ from plugins.utils import owner_only
 
 _START_TIME = time.monotonic()
 
-
 def register(app: Client) -> None:
 
     @app.on_message(filters.command("ping") & filters.private)
     @owner_only
     async def ping_cmd(client: Client, message: Message):
         start = time.monotonic()
-        msg = await message.reply("Pong!")
+        msg = await message.reply("`[ ◯ ] ᴘɪɴɢɪɴɢ sᴇʀᴠᴇʀ...`")
         elapsed = (time.monotonic() - start) * 1000
-        await msg.edit(f"Pong! <b>{elapsed:.2f}ms</b>")
+        await msg.edit(f"`[ ⚡️ ] sʏsᴛᴇᴍ ᴏɴʟɪɴᴇ: {elapsed:.2f}ᴍs`")
 
     @app.on_message(filters.command("uptime") & filters.private)
     @owner_only
@@ -31,19 +30,18 @@ def register(app: Client) -> None:
         days = delta.days
         hours, rem = divmod(delta.seconds, 3600)
         minutes, seconds = divmod(rem, 60)
-        await message.reply(
-            f"<b>Uptime:</b> {days}d {hours}h {minutes}m {seconds}s"
-        )
+        await message.reply(f"⏤͟͟͞͞★ **Sʏsᴛᴇᴍ Uᴘᴛɪᴍᴇ :**\n✧ `{days}d {hours}h {minutes}m {seconds}s`")
 
     @app.on_message(filters.command("stats") & filters.private)
     @owner_only
     async def stats_cmd(client: Client, message: Message):
         stats = await db.global_stats()
+        me = await client.get_me()
         await message.reply(
-            f"<b>JATT MUSIC BOT — Global Stats</b>\n\n"
-            f"<b>Total Users:</b> {stats['total_users']}\n"
-            f"<b>Total Groups:</b> {stats['total_chats']}\n"
-            f"<b>Total Plays:</b> {stats['total_plays']}"
+            f"⏤͟͟͞͞★ **{me.first_name.upper()} — Gʟᴏʙᴀʟ Sᴛᴀᴛs**\n\n"
+            f"✧ **Tᴏᴛᴀʟ Usᴇʀs:** `{stats['total_users']}`\n"
+            f"✧ **Tᴏᴛᴀʟ Gʀᴏᴜᴘs:** `{stats['total_chats']}`\n"
+            f"✧ **Tᴏᴛᴀʟ Pʟᴀʏs:** `{stats['total_plays']}`"
         )
 
     @app.on_message(filters.command("botinfo") & filters.private)
@@ -53,20 +51,20 @@ def register(app: Client) -> None:
         import platform
         me = await client.get_me()
         await message.reply(
-            f"<b>Bot Information</b>\n\n"
-            f"<b>Name:</b> {me.first_name}\n"
-            f"<b>Username:</b> @{me.username}\n"
-            f"<b>Version:</b> {config.BOT_VERSION}\n"
-            f"<b>Python:</b> {sys.version.split()[0]}\n"
-            f"<b>Platform:</b> {platform.system()} {platform.release()}"
+            f"⏤͟͟͞͞★ **Bᴏᴛ Iɴғᴏʀᴍᴀᴛɪᴏɴ**\n\n"
+            f"✧ **Nᴀᴍᴇ:** {me.first_name}\n"
+            f"✧ **Usᴇʀɴᴀᴍᴇ:** @{me.username}\n"
+            f"✧ **Vᴇʀsɪᴏɴ:** `{config.BOT_VERSION}`\n"
+            f"✧ **Pʏᴛʜᴏɴ:** `{sys.version.split()[0]}`\n"
+            f"✧ **Pʟᴀᴛғᴏʀᴍ:** `{platform.system()} {platform.release()}`"
         )
 
     @app.on_message(filters.command("maintenance") & filters.private)
     @owner_only
     async def maintenance_cmd(client: Client, message: Message):
         config.MAINTENANCE_MODE = not config.MAINTENANCE_MODE
-        state = "enabled" if config.MAINTENANCE_MODE else "disabled"
-        await message.reply(f"Maintenance mode <b>{state}</b>.")
+        state = "Eɴᴀʙʟᴇᴅ" if config.MAINTENANCE_MODE else "Dɪsᴀʙʟᴇᴅ"
+        await message.reply(f"⏤͟͟͞͞★ **Mᴀɪɴᴛᴇɴᴀɴᴄᴇ Mᴏᴅᴇ :** `{state}`")
 
     @app.on_message(filters.command("broadcast") & filters.private)
     @owner_only
@@ -74,12 +72,12 @@ def register(app: Client) -> None:
         args = message.command[1:]
         if not args:
             await message.reply(
-                "Usage: /broadcast -all/-users/-groups/-pin <message>\n\n"
-                "Flags:\n"
-                "-all: Send to all users and groups\n"
-                "-users: Send to all private users only\n"
-                "-groups: Send to all groups only\n"
-                "-pin: Pin message in groups"
+                "✧ **Usaɢᴇ:** `/broadcast -all/-users/-groups/-pin [message]`\n\n"
+                "**Fʟᴀɢs:**\n"
+                "`-all` : Sᴇɴᴅ ᴛᴏ ᴀʟʟ ᴜsᴇʀs & ɢʀᴏᴜᴘs\n"
+                "`-users` : Pʀɪᴠᴀᴛᴇ ᴜsᴇʀs ᴏɴʟʏ\n"
+                "`-groups` : Gʀᴏᴜᴘs ᴏɴʟʏ\n"
+                "`-pin` : Pɪɴ ᴍᴇssᴀɢᴇ ɪɴ ɢʀᴏᴜᴘs"
             )
             return
 
@@ -91,17 +89,16 @@ def register(app: Client) -> None:
             if message.reply_to_message:
                 text = message.reply_to_message.text or ""
             if not text:
-                await message.reply("Please provide a message to broadcast.")
+                await message.reply("⚠️ Pʟᴇᴀsᴇ ᴘʀᴏᴠɪᴅᴇ ᴀ ᴍᴇssᴀɢᴇ ᴛᴏ ʙʀᴏᴀᴅᴄᴀsᴛ.")
                 return
 
         pin = "-pin" in flags
         send_to_users = "-all" in flags or "-users" in flags
         send_to_groups = "-all" in flags or "-groups" in flags
 
-        msg = await message.reply("Broadcasting...")
+        msg = await message.reply("`[ 🔄 ] Bʀᴏᴀᴅᴄᴀsᴛɪɴɢ ɪɴ ᴘʀᴏɢʀᴇss...`")
 
-        sent = 0
-        failed = 0
+        sent, failed = 0, 0
 
         if send_to_users:
             users = await db.get_all_users()
@@ -129,7 +126,8 @@ def register(app: Client) -> None:
                     failed += 1
 
         await msg.edit(
-            f"<b>Broadcast complete</b>\n"
-            f"<b>Sent:</b> {sent}\n"
-            f"<b>Failed:</b> {failed}"
+            f"⏤͟͟͞͞★ **Bʀᴏᴀᴅᴄᴀsᴛ Cᴏᴍᴘʟᴇᴛᴇ**\n\n"
+            f"✧ **Sᴇɴᴛ:** `{sent}`\n"
+            f"✧ **Fᴀɪʟᴇᴅ:** `{failed}`"
         )
+        
