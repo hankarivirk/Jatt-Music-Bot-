@@ -8,11 +8,6 @@ import time
 from typing import Optional, TYPE_CHECKING
 
 from pytgcalls import PyTgCalls
-from pytgcalls.exceptions import (
-    NotInCallError,
-    GroupCallNotFound,
-    NoActiveGroupCall,
-)
 from pytgcalls.types import (
     AudioQuality,
     MediaStream,
@@ -216,12 +211,11 @@ async def play(
 
     try:
         await call.join_group_call(chat_id, media)
-    except GroupCallNotFound:
-        await call.change_stream(chat_id, media)
-    except NoActiveGroupCall:
-        raise RuntimeError("No active voice chat in this group. Start one first.")
     except Exception:
-        raise
+        try:
+            await call.change_stream(chat_id, media)
+        except Exception:
+            raise
 
     if seek > 0:
         stream.seek_to(seek)
@@ -275,8 +269,6 @@ async def stop(chat_id: int, client: Optional["Client"] = None) -> None:
     _cleanup_chat(chat_id)
     try:
         await call.leave_group_call(chat_id)
-    except (GroupCallNotFound, NotInCallError, NoActiveGroupCall):
-        pass
     except Exception as e:
         log.warning(f"stop(): leave_group_call error in {chat_id}: {e}")
     await db.clear_queue(chat_id)
