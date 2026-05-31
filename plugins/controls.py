@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pyrogram import Client, filters
-from pyrogram.types import CallbackQuery, Message
+from pyrogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 import database as db
 from core import stream as sm
@@ -10,13 +10,16 @@ from helpers.memory import is_muted
 from helpers.pinmanager import pin_message
 from helpers.thumbnails import generate_now_playing_card
 from plugins.utils import (
+    format_track,
     is_dj_or_admin,
     loop_keyboard,
     maintenance_check,
     now_playing_keyboard,
+    queue_keyboard,
     seek_keyboard,
 )
 
+_PER_PAGE = 10
 
 def register(app: Client) -> None:
 
@@ -24,64 +27,67 @@ def register(app: Client) -> None:
     @maintenance_check
     async def pause_cmd(client: Client, message: Message):
         if not await is_dj_or_admin(client, message.chat.id, message.from_user.id):
-            await message.reply("Only DJs and admins can pause.")
+            await message.reply("⚠️ **Aᴄᴄᴇss Dᴇɴɪᴇᴅ:** DJs/Admins only.")
             return
         ok = await sm.pause(message.chat.id)
-        await message.reply("Paused." if ok else "Nothing is playing or already paused.")
+        await message.reply("❙❙ **Sᴛʀᴇᴀᴍ Pᴀᴜsᴇᴅ**" if ok else "⚠️ Nᴏᴛʜɪɴɢ ɪs ᴘʟᴀʏɪɴɢ ᴏʀ ᴀʟʀᴇᴀᴅʏ ᴘᴀᴜsᴇᴅ.")
 
     @app.on_message(filters.command("resume") & filters.group)
     @maintenance_check
     async def resume_cmd(client: Client, message: Message):
         if not await is_dj_or_admin(client, message.chat.id, message.from_user.id):
-            await message.reply("Only DJs and admins can resume.")
+            await message.reply("⚠️ **Aᴄᴄᴇss Dᴇɴɪᴇᴅ:** DJs/Admins only.")
             return
         ok = await sm.resume(message.chat.id)
-        await message.reply("Resumed." if ok else "Nothing is paused.")
+        await message.reply("▷ **Sᴛʀᴇᴀᴍ Rᴇsᴜᴍᴇᴅ**" if ok else "⚠️ Sᴛʀᴇᴀᴍ ɪs ɴᴏᴛ ᴘᴀᴜsᴇᴅ.")
 
     @app.on_message(filters.command("mute") & filters.group)
     @maintenance_check
     async def mute_cmd(client: Client, message: Message):
         if not await is_dj_or_admin(client, message.chat.id, message.from_user.id):
-            await message.reply("Only DJs and admins can mute.")
+            await message.reply("⚠️ **Aᴄᴄᴇss Dᴇɴɪᴇᴅ:** DJs/Admins only.")
             return
         if not sm.get_active(message.chat.id):
-            await message.reply("Nothing is playing.")
+            await message.reply("🔇 Nᴏᴛʜɪɴɢ ɪs ᴘʟᴀʏɪɴɢ.")
             return
         if is_muted(message.chat.id):
-            await message.reply("Already muted. Use /unmute.")
+            await message.reply("⚠️ Aʟʀᴇᴀᴅʏ ᴍᴜᴛᴇᴅ. ᴜsᴇ /unmute")
             return
         ok = await sm.mute(message.chat.id)
-        await message.reply("Muted." if ok else "Could not mute.")
+        await message.reply("🔇 **Bᴏᴛ Mᴜᴛᴇᴅ ɪɴ VC**" if ok else "❌ Cᴏᴜʟᴅ ɴᴏᴛ ᴍᴜᴛᴇ.")
 
     @app.on_message(filters.command("unmute") & filters.group)
     @maintenance_check
     async def unmute_cmd(client: Client, message: Message):
         if not await is_dj_or_admin(client, message.chat.id, message.from_user.id):
-            await message.reply("Only DJs and admins can unmute.")
+            await message.reply("⚠️ **Aᴄᴄᴇss Dᴇɴɪᴇᴅ:** DJs/Admins only.")
             return
         if not sm.get_active(message.chat.id):
-            await message.reply("Nothing is playing.")
+            await message.reply("🔇 Nᴏᴛʜɪɴɢ ɪs ᴘʟᴀʏɪɴɢ.")
             return
         if not is_muted(message.chat.id):
-            await message.reply("Not muted. Use /mute to mute.")
+            await message.reply("⚠️ Nᴏᴛ ᴍᴜᴛᴇᴅ. ᴜsᴇ /mute")
             return
         ok = await sm.unmute(message.chat.id)
-        await message.reply("Unmuted." if ok else "Could not unmute.")
+        await message.reply("🔊 **Bᴏᴛ Uɴᴍᴜᴛᴇᴅ ɪɴ VC**" if ok else "❌ Cᴏᴜʟᴅ ɴᴏᴛ ᴜɴᴍᴜᴛᴇ.")
 
     @app.on_message(filters.command("skip") & filters.group)
     @maintenance_check
     async def skip_cmd(client: Client, message: Message):
         if not await is_dj_or_admin(client, message.chat.id, message.from_user.id):
-            await message.reply("Only DJs and admins can skip.")
+            await message.reply("⚠️ **Aᴄᴄᴇss Dᴇɴɪᴇᴅ:** DJs/Admins only.")
             return
         chat_id = message.chat.id
         active = sm.get_active(chat_id)
         if not active:
-            await message.reply("Nothing is playing.")
+            await message.reply("🔇 Nᴏᴛʜɪɴɢ ɪs ᴘʟᴀʏɪɴɢ.")
             return
+            
         await db.add_to_history(chat_id, active.track)
         next_track = await sm.skip_to_next(chat_id, client)
+        
         if next_track:
+            me = await client.get_me()
             buf = await generate_now_playing_card(
                 title=next_track["title"],
                 uploader=next_track.get("uploader", "Unknown"),
@@ -89,12 +95,13 @@ def register(app: Client) -> None:
                 requester=next_track.get("requester", "Unknown"),
                 elapsed=0,
                 duration=next_track.get("duration", 0),
+                bot_name=me.first_name
             )
             kb = now_playing_keyboard(chat_id)
             np_msg = await client.send_photo(
                 chat_id,
                 photo=buf,
-                caption=f"<b>Now Playing</b>\n<b>{next_track['title']}</b>",
+                caption=f"⏤͟͟͞͞★ **Sᴋɪᴘᴘᴇᴅ ᴛᴏ Nᴇxᴛ**\n\n✧ **Nᴏᴡ Pʟᴀʏɪɴɢ :** {next_track['title'][:40]}",
                 reply_markup=kb,
             )
             await pin_message(client, chat_id, np_msg.id)
@@ -103,41 +110,41 @@ def register(app: Client) -> None:
                 stream.message_id = np_msg.id
         else:
             await sm.stop(chat_id, client)
-            await message.reply("Queue ended. Left voice chat.")
+            await message.reply("🛑 **Qᴜᴇᴜᴇ Eɴᴅᴇᴅ.** Lᴇғᴛ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ.")
 
     @app.on_message(filters.command("stop") & filters.group)
     @maintenance_check
     async def stop_cmd(client: Client, message: Message):
         if not await is_dj_or_admin(client, message.chat.id, message.from_user.id):
-            await message.reply("Only DJs and admins can stop.")
+            await message.reply("⚠️ **Aᴄᴄᴇss Dᴇɴɪᴇᴅ:** DJs/Admins only.")
             return
         if not sm.get_active(message.chat.id):
-            await message.reply("Nothing is playing.")
+            await message.reply("🔇 Nᴏᴛʜɪɴɢ ɪs ᴘʟᴀʏɪɴɢ.")
             return
         await sm.stop(message.chat.id, client)
-        await message.reply("Stopped and left the voice chat.")
+        await message.reply("🛑 **Sᴛʀᴇᴀᴍ Sᴛᴏᴘᴘᴇᴅ & Qᴜᴇᴜᴇ Cʟᴇᴀʀᴇᴅ.**")
 
     @app.on_message(filters.command("shuffle") & filters.group)
     @maintenance_check
     async def shuffle_cmd(client: Client, message: Message):
         if not await is_dj_or_admin(client, message.chat.id, message.from_user.id):
-            await message.reply("Only DJs and admins can shuffle.")
+            await message.reply("⚠️ **Aᴄᴄᴇss Dᴇɴɪᴇᴅ:** DJs/Admins only.")
             return
         chat_id = message.chat.id
         await db.shuffle_queue(chat_id)
         from helpers.memory import mem_shuffle
         mem_shuffle(chat_id)
-        await message.reply("Queue shuffled.")
+        await message.reply("🔀 **Qᴜᴇᴜᴇ Sʜᴜғғʟᴇᴅ.**")
 
     @app.on_message(filters.command("loop") & filters.group)
     @maintenance_check
     async def loop_cmd(client: Client, message: Message):
         if not await is_dj_or_admin(client, message.chat.id, message.from_user.id):
-            await message.reply("Only DJs and admins can set loop mode.")
+            await message.reply("⚠️ **Aᴄᴄᴇss Dᴇɴɪᴇᴅ:** DJs/Admins only.")
             return
         current = await db.get_setting(message.chat.id, "loop_mode")
         await message.reply(
-            f"Current loop mode: <b>{current}</b>. Choose new mode:",
+            f"✧ **Cᴜʀʀᴇɴᴛ Lᴏᴏᴘ :** `{current.capitalize()}`\nCʜᴏᴏsᴇ ɴᴇᴡ ᴍᴏᴅᴇ:",
             reply_markup=loop_keyboard(message.chat.id),
         )
 
@@ -145,16 +152,16 @@ def register(app: Client) -> None:
     @maintenance_check
     async def seek_cmd(client: Client, message: Message):
         if not await is_dj_or_admin(client, message.chat.id, message.from_user.id):
-            await message.reply("Only DJs and admins can seek.")
+            await message.reply("⚠️ **Aᴄᴄᴇss Dᴇɴɪᴇᴅ:** DJs/Admins only.")
             return
         active = sm.get_active(message.chat.id)
         if not active:
-            await message.reply("Nothing is playing.")
+            await message.reply("🔇 Nᴏᴛʜɪɴɢ ɪs ᴘʟᴀʏɪɴɢ.")
             return
 
         args = message.command[1:]
         if not args:
-            await message.reply("Choose seek action:", reply_markup=seek_keyboard(message.chat.id))
+            await message.reply("✧ Cʜᴏᴏsᴇ sᴇᴇᴋ ᴀᴄᴛɪᴏɴ:", reply_markup=seek_keyboard(message.chat.id))
             return
 
         time_str = args[0].strip()
@@ -168,13 +175,13 @@ def register(app: Client) -> None:
             seconds = _parse_time(time_str)
 
         ok = await sm.seek(message.chat.id, seconds)
-        await message.reply(f"Seeked to {format_duration(seconds)}." if ok else "Could not seek.")
+        await message.reply(f"⏩ **Sᴇᴇᴋᴇᴅ ᴛᴏ :** `{format_duration(seconds)}`" if ok else "❌ Cᴏᴜʟᴅ ɴᴏᴛ sᴇᴇᴋ.")
 
     @app.on_message(filters.command("clearqueue") & filters.group)
     @maintenance_check
     async def clearqueue_cmd(client: Client, message: Message):
         if not await is_dj_or_admin(client, message.chat.id, message.from_user.id):
-            await message.reply("Only DJs and admins can clear the queue.")
+            await message.reply("⚠️ **Aᴄᴄᴇss Dᴇɴɪᴇᴅ:** DJs/Admins only.")
             return
         chat_id = message.chat.id
         active = sm.get_active(chat_id)
@@ -189,26 +196,27 @@ def register(app: Client) -> None:
             await db.clear_queue(chat_id)
             from helpers.memory import mem_clear
             mem_clear(chat_id)
-        await message.reply("Queue cleared (current track preserved).")
+        await message.reply("🗑 **Qᴜᴇᴜᴇ Cʟᴇᴀʀᴇᴅ** (Cᴜʀʀᴇɴᴛ ᴛʀᴀᴄᴋ ᴘʀᴇsᴇʀᴠᴇᴅ).")
 
     @app.on_message(filters.command("fix") & filters.group)
     @maintenance_check
     async def fix_cmd(client: Client, message: Message):
         if not await is_dj_or_admin(client, message.chat.id, message.from_user.id):
-            await message.reply("Only DJs and admins can use /fix.")
+            await message.reply("⚠️ **Aᴄᴄᴇss Dᴇɴɪᴇᴅ:** DJs/Admins only.")
             return
         chat_id = message.chat.id
         active = sm.get_active(chat_id)
         if not active:
-            await message.reply("Nothing is playing.")
+            await message.reply("🔇 Nᴏᴛʜɪɴɢ ɪs ᴘʟᴀʏɪɴɢ.")
             return
+        
+        msg = await message.reply("`[ 🔄 ] Fɪxɪɴɢ Sᴛʀᴇᴀᴍ Cᴏɴɴᴇᴄᴛɪᴏɴ...`")
         track = active.track
         elapsed = active.elapsed
         try:
             await sm.stop(chat_id, client)
         except Exception:
             pass
-        # Refresh URL before reconnecting
         if track.get("webpage_url"):
             try:
                 from helpers.downloader import fetch_track
@@ -219,9 +227,9 @@ def register(app: Client) -> None:
                 pass
         try:
             await sm.play(chat_id, track, seek=elapsed)
-            await message.reply(f"Reconnected and resumed at {format_duration(elapsed)}.")
+            await msg.edit(f"✅ **Rᴇᴄᴏɴɴᴇᴄᴛᴇᴅ & Rᴇsᴜᴍᴇᴅ ᴀᴛ :** `{format_duration(elapsed)}`")
         except Exception as e:
-            await message.reply(f"Failed to reconnect: {e}")
+            await msg.edit(f"❌ **Fᴀɪʟᴇᴅ ᴛᴏ ʀᴇᴄᴏɴɴᴇᴄᴛ:** `{e}`")
 
     # ─── Callback Query Handlers ──────────────────────────────────────────────
 
@@ -232,28 +240,24 @@ def register(app: Client) -> None:
         chat_id = int(parts[2])
 
         if not await is_dj_or_admin(client, chat_id, cb.from_user.id):
-            await cb.answer("Only DJs and admins can use these controls.", show_alert=True)
+            await cb.answer("⚠️ Admins & DJs Only!", show_alert=True)
             return
 
         if action == "pause":
             ok = await sm.pause(chat_id)
-            await cb.answer("Paused." if ok else "Already paused.")
+            await cb.answer("❙❙ Paused" if ok else "Already paused.")
             if ok:
                 try:
-                    await cb.message.edit_reply_markup(
-                        reply_markup=now_playing_keyboard(chat_id, paused=True)
-                    )
+                    await cb.message.edit_reply_markup(reply_markup=now_playing_keyboard(chat_id, paused=True))
                 except Exception:
                     pass
 
         elif action == "resume":
             ok = await sm.resume(chat_id)
-            await cb.answer("Resumed." if ok else "Not paused.")
+            await cb.answer("▷ Resumed" if ok else "Not paused.")
             if ok:
                 try:
-                    await cb.message.edit_reply_markup(
-                        reply_markup=now_playing_keyboard(chat_id, paused=False)
-                    )
+                    await cb.message.edit_reply_markup(reply_markup=now_playing_keyboard(chat_id, paused=False))
                 except Exception:
                     pass
 
@@ -262,72 +266,37 @@ def register(app: Client) -> None:
             if not active:
                 await cb.answer("Nothing playing.")
                 return
+            await cb.answer("⏭ Skipping...")
             await db.add_to_history(chat_id, active.track)
             next_track = await sm.skip_to_next(chat_id, client)
-            await cb.answer("Skipped." if next_track else "Queue ended.")
+            if not next_track:
+                await cb.message.reply("🛑 **Qᴜᴇᴜᴇ Eɴᴅᴇᴅ.**")
 
         elif action == "stop":
             await sm.stop(chat_id, client)
-            await cb.answer("Stopped.")
+            await cb.answer("🛑 Stopped.")
             try:
                 await cb.message.delete()
             except Exception:
                 pass
-
-        elif action == "voldwn":
-            active = sm.get_active(chat_id)
-            if active:
-                new_vol = max(0, active.volume - 10)
-                await sm.set_volume(chat_id, new_vol)
-                await cb.answer(f"Volume: {new_vol}%")
-            else:
-                await cb.answer("Nothing playing.")
-
-        elif action == "volup":
-            active = sm.get_active(chat_id)
-            if active:
-                new_vol = min(200, active.volume + 10)
-                await sm.set_volume(chat_id, new_vol)
-                await cb.answer(f"Volume: {new_vol}%")
-            else:
-                await cb.answer("Nothing playing.")
-
-        elif action == "shuffle":
-            await db.shuffle_queue(chat_id)
-            from helpers.memory import mem_shuffle
-            mem_shuffle(chat_id)
-            await cb.answer("Queue shuffled.")
-
-        elif action == "loop":
-            current = await db.get_setting(chat_id, "loop_mode")
-            await cb.message.reply(
-                f"Loop mode: <b>{current}</b>. Choose:",
-                reply_markup=loop_keyboard(chat_id),
-            )
-            await cb.answer()
 
         elif action == "queue":
             queue = await db.get_queue(chat_id)
             if not queue:
                 await cb.answer("Queue is empty.", show_alert=True)
                 return
-            from plugins.utils import format_track, queue_keyboard
+            
             page = 1
-            per_page = 10
-            total_pages = max(1, (len(queue) + per_page - 1) // per_page)
-            start = (page - 1) * per_page
-            lines = [format_track(t, i + start + 1) for i, t in enumerate(queue[start:start + per_page])]
-            text = f"<b>Queue ({len(queue)} tracks)</b>\n\n" + "\n".join(lines)
-            await cb.message.reply(text, reply_markup=queue_keyboard(chat_id, page, total_pages))
+            total_pages = max(1, (len(queue) + _PER_PAGE - 1) // _PER_PAGE)
+            start = 0
+            
+            current_tracks = queue[start:start + _PER_PAGE]
+            track_indices = [i + 1 for i in range(start, start + len(current_tracks))]
+            lines = [format_track(t, i) for t, i in zip(current_tracks, track_indices)]
+            
+            text = f"⏤͟͟͞͞★ **Cᴜʀʀᴇɴᴛ Qᴜᴇᴜᴇ — {len(queue)} Tʀᴀᴄᴋ(s)**\n\n" + "\n\n".join(lines)
+            await cb.message.reply(text, reply_markup=queue_keyboard(chat_id, page, total_pages, track_indices))
             await cb.answer()
-
-        elif action == "replay":
-            active = sm.get_active(chat_id)
-            if not active:
-                await cb.answer("Nothing playing.")
-                return
-            await sm.seek(chat_id, 0)
-            await cb.answer("Replaying from start.")
 
     @app.on_callback_query(filters.regex(r"^loop_"))
     async def loop_cb(client: Client, cb: CallbackQuery):
@@ -336,11 +305,11 @@ def register(app: Client) -> None:
         chat_id = int(parts[2])
 
         if not await is_dj_or_admin(client, chat_id, cb.from_user.id):
-            await cb.answer("Only DJs and admins can change loop mode.", show_alert=True)
+            await cb.answer("⚠️ Admins & DJs Only!", show_alert=True)
             return
 
         await db.set_setting(chat_id, "loop_mode", mode)
-        await cb.answer(f"Loop: {mode}")
+        await cb.answer(f"🔁 Loop set to: {mode.capitalize()}")
         try:
             await cb.message.delete()
         except Exception:
@@ -353,7 +322,7 @@ def register(app: Client) -> None:
         chat_id = int(parts[2])
 
         if not await is_dj_or_admin(client, chat_id, cb.from_user.id):
-            await cb.answer("Only DJs and admins can seek.", show_alert=True)
+            await cb.answer("⚠️ Admins & DJs Only!", show_alert=True)
             return
 
         active = sm.get_active(chat_id)
@@ -363,7 +332,7 @@ def register(app: Client) -> None:
 
         new_pos = max(0, active.elapsed - 10) if direction == "back" else active.elapsed + 10
         await sm.seek(chat_id, new_pos)
-        await cb.answer(f"Seeked to {format_duration(new_pos)}")
+        await cb.answer(f"⏩ Seeked to {format_duration(new_pos)}")
 
 
 def _parse_time(time_str: str) -> int:
@@ -377,3 +346,4 @@ def _parse_time(time_str: str) -> int:
         return int(time_str)
     except ValueError:
         return 0
+                    
