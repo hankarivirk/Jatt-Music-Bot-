@@ -9,9 +9,9 @@ from typing import Optional, TYPE_CHECKING
 
 from pytgcalls import PyTgCalls
 from pytgcalls.exceptions import (
-    GroupCallNotFoundError,
-    NotConnectedError,
-    CallBeforeStartError,
+    NotInCallError,
+    GroupCallNotFound,
+    NoActiveGroupCall,
 )
 from pytgcalls.types import (
     AudioQuality,
@@ -104,7 +104,6 @@ def get_pytgcalls() -> PyTgCalls:
 
 
 def init_stream(call: PyTgCalls, bot_client: "Client") -> None:
-    """Initialise the stream manager and register pytgcalls callbacks."""
     global _call, _bot_client
     _call = call
     _bot_client = bot_client
@@ -112,7 +111,6 @@ def init_stream(call: PyTgCalls, bot_client: "Client") -> None:
 
 
 def _register_callbacks(call: PyTgCalls) -> None:
-    """Register all pytgcalls event handlers on the instance."""
 
     @call.on_stream_end()
     async def on_stream_end(_, update) -> None:
@@ -122,13 +120,11 @@ def _register_callbacks(call: PyTgCalls) -> None:
 
     @call.on_left_group_call()
     async def on_left_call(_, update) -> None:
-        """Fired when the assistant is kicked or the VC ends externally."""
         chat_id: int = update.chat_id
         log.warning(f"Left group call in {chat_id}")
         active = _active_streams.get(chat_id)
         if not active:
             return
-        # Attempt auto-reconnect once
         await asyncio.sleep(3)
         try:
             media = _build_media_stream(active.track, active.elapsed, active)
@@ -142,7 +138,6 @@ def _register_callbacks(call: PyTgCalls) -> None:
 # ─── FFmpeg helpers ───────────────────────────────────────────────────────────
 
 def _build_ffmpeg_filter(stream: "ActiveStream") -> str:
-    """Build the FFmpeg audio filter chain string from active effects."""
     parts: list[str] = []
 
     if stream.bass > 0:
@@ -181,14 +176,9 @@ def _build_media_stream(
     stream: Optional["ActiveStream"] = None,
     video: bool = False,
 ) -> MediaStream:
-    """Build a pytgcalls MediaStream object with optional FFmpeg filters."""
-    ffmpeg_extra = ""
-
     seek_part = f"-ss {seek}" if seek > 0 else ""
-
     filter_str = _build_ffmpeg_filter(stream) if stream else ""
     filter_part = f"-af \"{filter_str}\"" if filter_str else ""
-
     parts = [p for p in [seek_part, filter_part] if p]
     ffmpeg_extra = " ".join(parts)
 
@@ -217,7 +207,6 @@ async def play(
     video: bool = False,
     seek: int = 0,
 ) -> None:
-    """Join or change to a stream in the given chat."""
     call = get_pytgcalls()
     stream = ActiveStream(chat_id, track, message_id)
     _active_streams[chat_id] = stream
@@ -227,9 +216,9 @@ async def play(
 
     try:
         await call.join_group_call(chat_id, media)
-    except GroupCallNotFoundError:
+    except GroupCallNotFound:
         await call.change_stream(chat_id, media)
-    except (NotConnectedError, CallBeforeStartError):
+    except NoActiveGroupCall:
         raise RuntimeError("No active voice chat in this group. Start one first.")
     except Exception:
         raise
@@ -282,12 +271,11 @@ async def unmute(chat_id: int) -> bool:
 
 
 async def stop(chat_id: int, client: Optional["Client"] = None) -> None:
-    """Stop playback, clear queue, leave VC."""
     call = get_pytgcalls()
     _cleanup_chat(chat_id)
     try:
         await call.leave_group_call(chat_id)
-    except (GroupCallNotFoundError, NotConnectedError, CallBeforeStartError):
+    except (GroupCallNotFound, NotInCallError, NoActiveGroupCall):
         pass
     except Exception as e:
         log.warning(f"stop(): leave_group_call error in {chat_id}: {e}")
@@ -309,7 +297,6 @@ async def seek(chat_id: int, seconds: int) -> bool:
 
 
 async def _apply_effects(chat_id: int) -> None:
-    """Re-stream from current position with updated FFmpeg filters."""
     stream = _active_streams.get(chat_id)
     if not stream:
         return
@@ -434,6 +421,7 @@ async def _handle_stream_end(chat_id: int) -> None:
         vc247 = await db.get_setting(chat_id, "vc247")
         if vc247:
             return
+
         async def _idle_leave(cid: int) -> None:
             if not _active_streams.get(cid):
                 try:
@@ -449,6 +437,7 @@ async def _handle_stream_end(chat_id: int) -> None:
                         )
                     except Exception:
                         pass
+
         start_idle_timer(chat_id, _idle_leave)
         return
 
