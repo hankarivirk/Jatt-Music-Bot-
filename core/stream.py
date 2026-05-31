@@ -1,13 +1,3 @@
-"""
-Core stream manager — pytgcalls 3.0.0+ / 2.x + pyrogram 2.x
-
-Key responsibilities:
-- join / leave / change group call streams
-- FFmpeg filter chain (bass, speed, pitch, reverb, nightcore, volume)
-- on_stream_end: auto-advance queue with loop support
-- on_left_group_call: auto-reconnect
-- idle timer and NP-card updater tasks
-"""
 from __future__ import annotations
 
 import asyncio
@@ -19,6 +9,9 @@ from pytgcalls.types import (
     AudioQuality,
     MediaStream,
     VideoQuality,
+    Update,
+    StreamAudioEnded,
+    StreamVideoEnded,
 )
 
 import database as db
@@ -116,29 +109,26 @@ def init_stream(call: PyTgCalls, bot_client: "Client") -> None:
 def _register_callbacks(call: PyTgCalls) -> None:
     """Register all pytgcalls event handlers on the instance."""
 
-    @call.on_stream_end()
-    async def on_stream_end(_, update) -> None:
-        chat_id: int = update.chat_id
-        log.info(f"Stream ended in chat {chat_id}")
-        await _handle_stream_end(chat_id)
+    # Using the new event system for PyTgCalls v3+
+    @call.on_update()
+    async def on_stream_end(client: PyTgCalls, update: Update) -> None:
+        # Check if the update is about the stream ending
+        if isinstance(update, (StreamAudioEnded, StreamVideoEnded)):
+            chat_id = update.chat_id
+            log.info(f"Stream ended in chat {chat_id}")
+            await _handle_stream_end(chat_id)
 
-    @call.on_left_group_call()
-    async def on_left_call(_, update) -> None:
-        """Fired when the assistant is kicked or the VC ends externally."""
-        chat_id: int = update.chat_id
+    @call.on_kicked()
+    async def on_kicked(client: PyTgCalls, chat_id: int) -> None:
+        """Fired when the assistant is kicked."""
+        log.warning(f"Kicked from group call in {chat_id}")
+        _cleanup_chat(chat_id)
+        
+    @call.on_left()
+    async def on_left_call(client: PyTgCalls, chat_id: int) -> None:
+        """Fired when the assistant leaves the VC."""
         log.warning(f"Left group call in {chat_id}")
-        active = _active_streams.get(chat_id)
-        if not active:
-            return
-        # Attempt auto-reconnect once
-        await asyncio.sleep(3)
-        try:
-            media = _build_media_stream(active.track, active.elapsed, active)
-            await call.join_group_call(chat_id, media)
-            log.info(f"Auto-reconnected in {chat_id}")
-        except Exception as e:
-            log.warning(f"Auto-reconnect failed in {chat_id}: {e}")
-            _cleanup_chat(chat_id)
+        _cleanup_chat(chat_id)
 
 
 # ─── FFmpeg helpers ───────────────────────────────────────────────────────────
@@ -197,6 +187,7 @@ def _build_media_stream(
     parts = [p for p in [seek_part, filter_part] if p]
     ffmpeg_extra = " ".join(parts)
 
+    # In v3+, it's audio_parameters and video_parameters
     if video:
         return MediaStream(
             track["url"],
@@ -230,21 +221,13 @@ async def play(
     media = _build_media_stream(track, seek, stream, video)
 
     try:
-        await call.join_group_call(chat_id, media)
+        await call.play(chat_id, media)
     except Exception as e:
         err = str(e).lower()
-        if "already" in err or "join" in err or "groupcallparticipant" in err:
-            try:
-                await call.change_stream(chat_id, media)
-            except Exception as ex:
-                raise RuntimeError(f"Could not change stream: {ex}")
-        elif "active" in err or "not found" in err:
+        if "not in call" in err or "no active" in err:
             raise RuntimeError("No active voice chat in this group. Start one first.")
         else:
-            try:
-                await call.change_stream(chat_id, media)
-            except Exception:
-                raise e
+             raise RuntimeError(f"Could not play stream: {e}")
 
     if seek > 0:
         stream.seek_to(seek)
@@ -298,11 +281,9 @@ async def stop(chat_id: int, client: Optional["Client"] = None) -> None:
     call = get_pytgcalls()
     _cleanup_chat(chat_id)
     try:
-        await call.leave_group_call(chat_id)
+        await call.leave_call(chat_id)
     except Exception as e:
-        err = str(e).lower()
-        if "not found" not in err and "no active" not in err and "not in" not in err:
-            log.warning(f"stop(): leave_group_call error in {chat_id}: {e}")
+        log.warning(f"stop(): leave_call error in {chat_id}: {e}")
             
     await db.clear_queue(chat_id)
     c = client or _bot_client
@@ -316,7 +297,7 @@ async def seek(chat_id: int, seconds: int) -> bool:
         return False
     call = get_pytgcalls()
     media = _build_media_stream(stream.track, seconds, stream, stream.track.get("video", False))
-    await call.change_stream(chat_id, media)
+    await call.play(chat_id, media)
     stream.seek_to(seconds)
     return True
 
@@ -329,7 +310,7 @@ async def _apply_effects(chat_id: int) -> None:
     call = get_pytgcalls()
     elapsed = stream.elapsed
     media = _build_media_stream(stream.track, elapsed, stream, stream.track.get("video", False))
-    await call.change_stream(chat_id, media)
+    await call.play(chat_id, media)
     stream.seek_to(elapsed)
 
 
@@ -462,7 +443,7 @@ async def _handle_stream_end(chat_id: int) -> None:
             if not _active_streams.get(cid):
                 try:
                     call = get_pytgcalls()
-                    await call.leave_group_call(cid)
+                    await call.leave_call(cid)
                 except Exception:
                     pass
                 if _bot_client:
@@ -639,4 +620,4 @@ def _cleanup_chat(chat_id: int) -> None:
     _cancel_idle(chat_id)
     _cancel_np_task(chat_id)
     set_inactive(chat_id)
-        
+                
