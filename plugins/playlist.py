@@ -11,42 +11,42 @@ from helpers.pinmanager import pin_message
 from helpers.thumbnails import generate_now_playing_card
 from plugins.utils import maintenance_check
 
-
 def register(app: Client) -> None:
 
     @app.on_message(filters.command("playlist") & filters.group)
     @maintenance_check
     async def playlist_cmd(client: Client, message: Message):
         user = message.from_user
+        if not user: return
         chat_id = message.chat.id
 
         if is_flooded(chat_id, user.id):
             secs = remaining_cooldown(chat_id, user.id)
-            await message.reply(f"Slow down! Wait {secs:.1f}s.")
+            await message.reply(f"⚠️ **Cooldown:** Pʟᴇᴀsᴇ ᴡᴀɪᴛ `{secs:.1f}s`.")
             return
 
         args = message.command[1:]
         if not args:
-            await message.reply("Usage: /playlist <YouTube playlist URL>")
+            await message.reply("✧ **Usaɢᴇ:** `/playlist [YouTube playlist URL]`")
             return
 
         url = args[0].strip()
         if "list=" not in url and "playlist" not in url.lower():
-            await message.reply("Please provide a valid YouTube playlist URL.")
+            await message.reply("❌ Pʟᴇᴀsᴇ ᴘʀᴏᴠɪᴅᴇ ᴀ ᴠᴀʟɪᴅ YᴏᴜTᴜʙᴇ ᴘʟᴀʏʟɪsᴛ ʟɪɴᴋ.")
             return
 
         await db.upsert_user(user.id, user.first_name)
-        await db.upsert_chat(chat_id, message.chat.title or "")
+        await db.upsert_chat(chat_id, message.chat.title or "Unknown Chat")
 
         if await db.is_banned_in_chat(chat_id, user.id):
-            await message.reply("You are banned from using the bot in this group.")
+            await message.reply("⛔️ ʏᴏᴜ ᴀʀᴇ ʙᴀɴɴᴇᴅ ғʀᴏᴍ ᴜsɪɴɢ ᴛʜɪs ʙᴏᴛ.")
             return
 
-        msg = await message.reply("Loading playlist, this may take a moment...")
+        msg = await message.reply("`[ 🔄 ] Fᴇᴛᴄʜɪɴɢ Pʟᴀʏʟɪsᴛ Tʀᴀᴄᴋs...`")
 
         tracks = await fetch_playlist(url)
         if not tracks:
-            await msg.edit("Could not load the playlist. Make sure it's public.")
+            await msg.edit("❌ **Cᴏᴜʟᴅ ɴᴏᴛ ʟᴏᴀᴅ ᴘʟᴀʏʟɪsᴛ.** Mᴀᴋᴇ sᴜʀᴇ ɪᴛ ɪs ᴘᴜʙʟɪᴄ.")
             return
 
         added = 0
@@ -73,14 +73,16 @@ def register(app: Client) -> None:
             added += 1
 
         if added == 0:
-            await msg.edit("All tracks from the playlist are already in the queue.")
+            await msg.edit("⚠️ **Aʟʟ ᴛʀᴀᴄᴋs ᴀʀᴇ ᴀʟʀᴇᴀᴅʏ ɪɴ ᴛʜᴇ ǫᴜᴇᴜᴇ.**")
             return
 
         if not sm.get_active(chat_id):
             queue = await db.get_queue(chat_id)
             if not queue:
-                await msg.edit("Playlist added but queue is empty.")
+                await msg.edit("✅ Playlist added but queue is empty.")
                 return
+                
+            await msg.edit("`[ ⚡️ ] ɪɴɪᴛɪᴀʟɪᴢɪɴɢ ᴀᴜᴅɪᴏ ᴇɴɢɪɴᴇ...`")
             first_track_data = queue[0]
             info = await fetch_track(
                 first_track_data.get("webpage_url") or
@@ -96,9 +98,15 @@ def register(app: Client) -> None:
                     {"$set": {"tracks.0": first_track_data}},
                 )
 
-            await sm.play(chat_id, first_track_data, video=False)
+            try:
+                await sm.play(chat_id, first_track_data, video=False)
+            except Exception as e:
+                await msg.edit(f"❌ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ ᴇʀʀᴏʀ: `{str(e)}`")
+                return
+                
             await msg.delete()
 
+            me = await client.get_me()
             buf = await generate_now_playing_card(
                 title=first_track_data["title"],
                 uploader=first_track_data.get("uploader", "Unknown"),
@@ -106,6 +114,7 @@ def register(app: Client) -> None:
                 requester=first_track_data.get("requester", "Unknown"),
                 elapsed=0,
                 duration=first_track_data.get("duration", 0),
+                bot_name=me.first_name
             )
             from plugins.utils import now_playing_keyboard
             kb = now_playing_keyboard(chat_id)
@@ -113,8 +122,8 @@ def register(app: Client) -> None:
                 chat_id,
                 photo=buf,
                 caption=(
-                    f"<b>Playlist loaded — {added} tracks added</b>\n\n"
-                    f"<b>Now Playing</b>\n<b>{first_track_data['title']}</b>"
+                    f"⏤͟͟͞͞★ **Pʟᴀʏʟɪsᴛ Lᴏᴀᴅᴇᴅ :** `{added} ᴛʀᴀᴄᴋs ᴀᴅᴅᴇᴅ`\n\n"
+                    f"✧ **Nᴏᴡ Pʟᴀʏɪɴɢ :** [{first_track_data['title'][:40]}]({first_track_data.get('webpage_url', '')})"
                 ),
                 reply_markup=kb,
             )
@@ -126,12 +135,14 @@ def register(app: Client) -> None:
                     return
                 await sm.stop(cid, client)
                 try:
-                    await client.send_message(cid, "Left voice chat due to inactivity.")
+                    await client.send_message(cid, "🛑 **Lᴇғᴛ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ ᴅᴜᴇ ᴛᴏ ɪɴᴀᴄᴛɪᴠɪᴛʏ.**")
                 except Exception:
                     pass
 
             sm.start_idle_timer(chat_id, _on_idle)
         else:
             await msg.edit(
-                f"<b>Playlist loaded</b>\n{added} tracks added to queue."
+                f"⏤͟͟͞͞★ **Pʟᴀʏʟɪsᴛ Lᴏᴀᴅᴇᴅ**\n"
+                f"✧ **Aᴅᴅᴇᴅ :** `{added} ᴛʀᴀᴄᴋs ᴛᴏ ǫᴜᴇᴜᴇ`"
             )
+            
