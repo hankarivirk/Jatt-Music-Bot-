@@ -7,11 +7,12 @@ import asyncio
 import time
 from typing import Optional, TYPE_CHECKING
 
-from pytgcalls import PyTgCalls
+from pytgcalls import PyTgCalls, filters
 from pytgcalls.types import (
     AudioQuality,
     MediaStream,
     VideoQuality,
+    ChatUpdate,
 )
 from pytgcalls.exceptions import NoActiveGroupCall
 
@@ -108,16 +109,16 @@ def init_stream(call: PyTgCalls, bot_client: "Client") -> None:
 
 def _register_callbacks(call: PyTgCalls) -> None:
 
-    @call.on_stream_end()
+    @call.on_update(filters.stream_end)
     async def on_stream_end(_, update) -> None:
         chat_id: int = update.chat_id
         log.info(f"Stream ended in chat {chat_id}")
         await _handle_stream_end(chat_id)
 
-    @call.on_left_group_call()
+    @call.on_update(filters.chat_update(ChatUpdate.Status.KICKED | ChatUpdate.Status.LEFT_CALL | ChatUpdate.Status.CLOSED_VOICE_CHAT))
     async def on_left_call(_, update) -> None:
         chat_id: int = update.chat_id
-        log.warning(f"Left group call in {chat_id}")
+        log.warning(f"Left group call or VC closed in {chat_id}")
         active = _active_streams.get(chat_id)
         if not active:
             return
