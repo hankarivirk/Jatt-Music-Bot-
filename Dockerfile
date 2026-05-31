@@ -26,9 +26,8 @@ RUN mkdir -p /app/assets/fonts && \
 COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
-    apt-get purge -y --auto-remove gcc g++ make libffi-dev libssl-dev && \
-    rm -rf /var/lib/apt/lists/* /root/.cache
-    
+    rm -rf /root/.cache
+
 COPY . .
 
 CMD ["python", "main.py"]
