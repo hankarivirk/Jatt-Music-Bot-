@@ -6,10 +6,11 @@ db = None
 
 async def init():
     global client, db
-    if not config.MONGO_DB_URI:
-        print("⚠️ WARNING: MONGO_DB_URI is not set in config!")
+    # Fixed: Using MONGO_URI instead of MONGO_DB_URI
+    if not hasattr(config, 'MONGO_URI') or not config.MONGO_URI:
+        print("⚠️ WARNING: MONGO_URI is not set in config!")
         return
-    client = motor.motor_asyncio.AsyncIOMotorClient(config.MONGO_DB_URI)
+    client = motor.motor_asyncio.AsyncIOMotorClient(config.MONGO_URI)
     db = client.jattmusicbot  # Database Name
     print("✅ Database initialized successfully!")
 
@@ -201,4 +202,4 @@ async def weekly_top(chat_id: int, limit: int = 5):
 
 async def leaderboard(chat_id: int, limit: int = 10):
     return await top_djs(chat_id, limit)
-        
+    
