@@ -11,8 +11,10 @@ from pytgcalls import PyTgCalls
 from pytgcalls.types import (
     AudioQuality,
     MediaStream,
-    VideoParameters,
+    VideoQuality,  # VideoParameters di jagah eh update kita hai
 )
+# Exceptions layi vi updated import (GroupCallNotFound di jagah)
+from pytgcalls.exceptions import NoActiveGroupCall
 
 import database as db
 from helpers.logger import log
@@ -181,7 +183,8 @@ def _build_media_stream(
         return MediaStream(
             track["url"],
             audio_quality=AudioQuality.STUDIO,
-            video_parameters=VideoParameters(1280, 720, 30),
+            # Updated: 'video_parameters' ton 'video_flags' ho gaya hai
+            video_flags=VideoQuality.HD_720p,
             ffmpeg_parameters=ffmpeg_extra or None,
         )
 
@@ -362,6 +365,231 @@ async def toggle_nightcore(chat_id: int) -> bool:
 
 
 async def normalise(chat_id: int) -> bool:
+    stream = _active_streams.get(chat_id)
+    if not stream:
+        return False
+    stream.speed = 1.0
+    stream.pitch = 1.0
+    stream.bass = 0
+    stream.reverb = False
+    stream.nightcore = False
+    stream.volume = 100
+    await _apply_effects(chat_id)
+    return True
+
+
+# ─── Stream-end handler ───────────────────────────────────────────────────────
+
+async def _handle_stream_end(chat_id: int) -> None:
+    stream = _active_streams.get(chat_id)
+    if not stream:
+        return
+
+    loop_mode = await db.get_setting(chat_id, "loop_mode")
+
+    if loop_mode == "track":
+        try:
+            await play(chat_id, stream.track, message_id=stream.message_id,
+                       video=stream.track.get("video", False))
+        except Exception as e:
+            log.warning(f"Loop-track replay failed in {chat_id}: {e}")
+        return
+
+    if loop_mode == "queue":
+        queue = await db.get_queue(chat_id)
+        if len(queue) > 1:
+            current = queue[0]
+            await db.remove_from_queue(chat_id, 1)
+            await db.add_to_queue(chat_id, current)
+            queue = await db.get_queue(chat_id)
+            mem_set_queue(chat_id, queue)
+
+    await db.add_to_history(chat_id, stream.track)
+    await db.remove_from_queue(chat_id, 1)
+    mem_pop_first(chat_id)
+
+    next_queue = await db.get_queue(chat_id)
+    if not next_queue:
+        _active_streams.pop(chat_id, None)
+        set_inactive(chat_id)
+        stop_np_updater(chat_id)
+        vc247 = await db.get_setting(chat_id, "vc247")
+        if vc247:
+            return
+
+        async def _idle_leave(cid: int) -> None:
+            if not _active_streams.get(cid):
+                try:
+                    call = get_pytgcalls()
+                    await call.leave_group_call(cid)
+                except Exception:
+                    pass
+                if _bot_client:
+                    try:
+                        await _bot_client.send_message(
+                            cid,
+                            "⏹ <b>Queue Ended</b>\nAll songs played. Left the voice chat."
+                        )
+                    except Exception:
+                        pass
+
+        start_idle_timer(chat_id, _idle_leave)
+        return
+
+    next_track = next_queue[0]
+
+    if next_track.get("webpage_url"):
+        try:
+            from helpers.downloader import fetch_track
+            fresh = await fetch_track(next_track["webpage_url"])
+            if fresh and fresh.get("url"):
+                next_track["url"] = fresh["url"]
+                next_track["thumbnail"] = fresh.get("thumbnail", next_track.get("thumbnail", ""))
+        except Exception as e:
+            log.warning(f"URL refresh failed for {next_track['title']}: {e}")
+
+    try:
+        await play(chat_id, next_track, video=next_track.get("video", False))
+    except Exception as e:
+        log.error(f"Failed to play next track in {chat_id}: {e}")
+        return
+
+    if _bot_client:
+        try:
+            await _send_np_card_internal(chat_id, next_track)
+        except Exception as e:
+            log.warning(f"NP card send failed: {e}")
+
+
+async def _send_np_card_internal(chat_id: int, track: dict) -> None:
+    from helpers.thumbnails import generate_now_playing_card
+    from helpers.pinmanager import pin_message
+    from plugins.utils import now_playing_keyboard
+    from helpers.downloader import format_duration
+
+    client = _bot_client
+    if not client:
+        return
+
+    buf = await generate_now_playing_card(
+        title=track["title"],
+        uploader=track.get("uploader", "Unknown"),
+        thumbnail_url=track.get("thumbnail", ""),
+        requester=track.get("requester", "Unknown"),
+        elapsed=0,
+        duration=track.get("duration", 0),
+    )
+    kb = now_playing_keyboard(chat_id)
+    np_msg = await client.send_photo(
+        chat_id,
+        photo=buf,
+        caption=(
+            f"<b>Now Playing</b>\n"
+            f"<b>{track['title']}</b>\n"
+            f"{format_duration(track.get('duration', 0))}"
+        ),
+        reply_markup=kb,
+    )
+    stream = _active_streams.get(chat_id)
+    if stream:
+        stream.message_id = np_msg.id
+    await pin_message(client, chat_id, np_msg.id)
+
+
+# ─── Queue helpers ────────────────────────────────────────────────────────────
+
+def get_active(chat_id: int) -> Optional[ActiveStream]:
+    return _active_streams.get(chat_id)
+
+
+async def skip_to_next(chat_id: int, client: Optional["Client"] = None) -> Optional[dict]:
+    queue = await db.get_queue(chat_id)
+    if not queue or len(queue) < 2:
+        return None
+
+    current = queue[0]
+    await db.add_to_history(chat_id, current)
+    await db.remove_from_queue(chat_id, 1)
+    mem_pop_first(chat_id)
+
+    queue = await db.get_queue(chat_id)
+    if not queue:
+        return None
+
+    next_track = queue[0]
+
+    if next_track.get("webpage_url"):
+        try:
+            from helpers.downloader import fetch_track
+            fresh = await fetch_track(next_track["webpage_url"])
+            if fresh and fresh.get("url"):
+                next_track["url"] = fresh["url"]
+        except Exception:
+            pass
+
+    await play(chat_id, next_track, video=next_track.get("video", False))
+    return next_track
+
+
+# ─── Timers ───────────────────────────────────────────────────────────────────
+
+def _cancel_idle(chat_id: int) -> None:
+    task = _idle_tasks.pop(chat_id, None)
+    if task and not task.done():
+        task.cancel()
+
+
+def _cancel_np_task(chat_id: int) -> None:
+    task = _np_tasks.pop(chat_id, None)
+    if task and not task.done():
+        task.cancel()
+
+
+def start_idle_timer(chat_id: int, callback) -> None:
+    _cancel_idle(chat_id)
+
+    async def _timer():
+        from config import IDLE_TIMEOUT
+        await asyncio.sleep(IDLE_TIMEOUT)
+        try:
+            await callback(chat_id)
+        except Exception as e:
+            log.warning(f"Idle timer callback error in {chat_id}: {e}")
+
+    _idle_tasks[chat_id] = asyncio.create_task(_timer())
+
+
+def start_np_updater(chat_id: int, callback) -> None:
+    _cancel_np_task(chat_id)
+
+    async def _updater():
+        from config import NP_UPDATE_INTERVAL
+        while True:
+            await asyncio.sleep(NP_UPDATE_INTERVAL)
+            try:
+                stream = _active_streams.get(chat_id)
+                if not stream:
+                    break
+                await callback(chat_id)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log.warning(f"NP updater error in {chat_id}: {e}")
+                break
+
+    _np_tasks[chat_id] = asyncio.create_task(_updater())
+
+
+def stop_np_updater(chat_id: int) -> None:
+    _cancel_np_task(chat_id)
+
+
+def _cleanup_chat(chat_id: int) -> None:
+    _active_streams.pop(chat_id, None)
+    _cancel_idle(chat_id)
+    _cancel_np_task(chat_id)
+    set_inactive(chat_id)
+ bool:
     stream = _active_streams.get(chat_id)
     if not stream:
         return False
