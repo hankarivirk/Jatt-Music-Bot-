@@ -50,7 +50,7 @@ async def main() -> None:
     play.register(app)
     playlist.register(app)
     queue.register(app)
-    quiz.register(app)           # Game Registered
+    quiz.register(app)           
     search.register(app)
     start.register(app)
     stats.register(app)
@@ -78,4 +78,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         log.info("Bot stopped by user.")
-        
+    
