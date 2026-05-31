@@ -24,8 +24,11 @@ RUN mkdir -p /app/assets/fonts && \
        /app/assets/fonts/Roboto-Bold.ttf 2>/dev/null || true
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt && \
+    apt-get purge -y --auto-remove gcc g++ make libffi-dev libssl-dev && \
+    rm -rf /var/lib/apt/lists/* /root/.cache
+    
 COPY . .
 
 CMD ["python", "main.py"]
