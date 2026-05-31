@@ -4,6 +4,16 @@ import asyncio
 import importlib
 import sys
 
+# --- PYTGCALLS PYROGRAM V2 FIX ---
+# Pyrogram 2.x vich GroupcallForbidden nahi hunda, is layi aapa fake create kar rahe haan
+# taaki pytgcalls import karan lagge crash na hove.
+import pyrogram.errors
+if not hasattr(pyrogram.errors, "GroupcallForbidden"):
+    class GroupcallForbidden(Exception):
+        pass
+    pyrogram.errors.GroupcallForbidden = GroupcallForbidden
+# ---------------------------------
+
 from pyrogram import Client, idle
 from pyrogram.types import BotCommand
 from pytgcalls import PyTgCalls
@@ -156,3 +166,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+        
