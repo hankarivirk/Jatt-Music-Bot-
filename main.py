@@ -1,4 +1,9 @@
 import asyncio
+import pyrogram.errors
+# Patch for missing GroupcallForbidden
+if not hasattr(pyrogram.errors, "GroupcallForbidden"):
+    class GroupcallForbidden(Exception): pass
+    pyrogram.errors.GroupcallForbidden = GroupcallForbidden
 from pyrogram import Client, idle
 from pytgcalls import PyTgCalls
 
