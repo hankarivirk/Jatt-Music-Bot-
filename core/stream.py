@@ -1,12 +1,5 @@
 """
-Core stream manager — pytgcalls 3.0.0.dev28 + pyrogram 2.x
-
-Key responsibilities:
-- join / leave / change group call streams
-- FFmpeg filter chain (bass, speed, pitch, reverb, nightcore, volume)
-- on_stream_end: auto-advance queue with loop support
-- on_left_group_call: auto-reconnect
-- idle timer and NP-card updater tasks
+Core stream manager — pytgcalls (latest) + pyrogram 2.x
 """
 from __future__ import annotations
 
@@ -16,9 +9,9 @@ from typing import Optional, TYPE_CHECKING
 
 from pytgcalls import PyTgCalls
 from pytgcalls.exceptions import (
-    AlreadyJoinedError,
-    NoActiveGroupCall,
-    NotInGroupCallError,
+    GroupCallNotFoundError,
+    NotConnectedError,
+    CallBeforeStartError,
 )
 from pytgcalls.types import (
     AudioQuality,
@@ -162,7 +155,6 @@ def _build_ffmpeg_filter(stream: "ActiveStream") -> str:
         pitch = 1.25
 
     if speed != 1.0:
-        # atempo only accepts 0.5–2.0; chain multiple for extreme values
         if speed < 0.5:
             speed = 0.5
         elif speed > 2.0:
@@ -192,10 +184,8 @@ def _build_media_stream(
     """Build a pytgcalls MediaStream object with optional FFmpeg filters."""
     ffmpeg_extra = ""
 
-    # seek offset
     seek_part = f"-ss {seek}" if seek > 0 else ""
 
-    # filter chain
     filter_str = _build_ffmpeg_filter(stream) if stream else ""
     filter_part = f"-af \"{filter_str}\"" if filter_str else ""
 
@@ -237,9 +227,9 @@ async def play(
 
     try:
         await call.join_group_call(chat_id, media)
-    except AlreadyJoinedError:
+    except GroupCallNotFoundError:
         await call.change_stream(chat_id, media)
-    except NoActiveGroupCall:
+    except (NotConnectedError, CallBeforeStartError):
         raise RuntimeError("No active voice chat in this group. Start one first.")
     except Exception:
         raise
@@ -297,7 +287,7 @@ async def stop(chat_id: int, client: Optional["Client"] = None) -> None:
     _cleanup_chat(chat_id)
     try:
         await call.leave_group_call(chat_id)
-    except (NoActiveGroupCall, NotInGroupCallError):
+    except (GroupCallNotFoundError, NotConnectedError, CallBeforeStartError):
         pass
     except Exception as e:
         log.warning(f"stop(): leave_group_call error in {chat_id}: {e}")
@@ -406,20 +396,15 @@ async def normalise(chat_id: int) -> bool:
     return True
 
 
-# ─── Stream-end handler (the critical piece) ──────────────────────────────────
+# ─── Stream-end handler ───────────────────────────────────────────────────────
 
 async def _handle_stream_end(chat_id: int) -> None:
-    """
-    Called by pytgcalls when a track finishes naturally.
-    Implements loop modes and auto-advances the queue.
-    """
     stream = _active_streams.get(chat_id)
     if not stream:
         return
 
     loop_mode = await db.get_setting(chat_id, "loop_mode")
 
-    # ── Loop: track ─────────────────────────────
     if loop_mode == "track":
         try:
             await play(chat_id, stream.track, message_id=stream.message_id,
@@ -428,32 +413,27 @@ async def _handle_stream_end(chat_id: int) -> None:
             log.warning(f"Loop-track replay failed in {chat_id}: {e}")
         return
 
-    # ── Loop: queue — move current to end ────────
     if loop_mode == "queue":
         queue = await db.get_queue(chat_id)
         if len(queue) > 1:
             current = queue[0]
             await db.remove_from_queue(chat_id, 1)
             await db.add_to_queue(chat_id, current)
-            # sync memory
             queue = await db.get_queue(chat_id)
             mem_set_queue(chat_id, queue)
 
-    # ── Advance to next track ────────────────────
     await db.add_to_history(chat_id, stream.track)
     await db.remove_from_queue(chat_id, 1)
     mem_pop_first(chat_id)
 
     next_queue = await db.get_queue(chat_id)
     if not next_queue:
-        # Queue empty
         _active_streams.pop(chat_id, None)
         set_inactive(chat_id)
         stop_np_updater(chat_id)
         vc247 = await db.get_setting(chat_id, "vc247")
         if vc247:
-            return  # Stay in VC, wait for next play command
-        # Idle leave
+            return
         async def _idle_leave(cid: int) -> None:
             if not _active_streams.get(cid):
                 try:
@@ -463,7 +443,10 @@ async def _handle_stream_end(chat_id: int) -> None:
                     pass
                 if _bot_client:
                     try:
-                        await _bot_client.send_message(cid, "Queue ended. Left voice chat.")
+                        await _bot_client.send_message(
+                            cid,
+                            "⏹ <b>Queue Ended</b>\nAll songs played. Left the voice chat."
+                        )
                     except Exception:
                         pass
         start_idle_timer(chat_id, _idle_leave)
@@ -471,7 +454,6 @@ async def _handle_stream_end(chat_id: int) -> None:
 
     next_track = next_queue[0]
 
-    # Fetch fresh stream URL (URLs expire after ~6h)
     if next_track.get("webpage_url"):
         try:
             from helpers.downloader import fetch_track
@@ -488,7 +470,6 @@ async def _handle_stream_end(chat_id: int) -> None:
         log.error(f"Failed to play next track in {chat_id}: {e}")
         return
 
-    # Send NP card
     if _bot_client:
         try:
             await _send_np_card_internal(chat_id, next_track)
@@ -497,7 +478,6 @@ async def _handle_stream_end(chat_id: int) -> None:
 
 
 async def _send_np_card_internal(chat_id: int, track: dict) -> None:
-    """Send a Now Playing card (used internally after stream-end advances queue)."""
     from helpers.thumbnails import generate_now_playing_card
     from helpers.pinmanager import pin_message
     from plugins.utils import now_playing_keyboard
@@ -539,7 +519,6 @@ def get_active(chat_id: int) -> Optional[ActiveStream]:
 
 
 async def skip_to_next(chat_id: int, client: Optional["Client"] = None) -> Optional[dict]:
-    """Manually skip to the next track. Returns the new track or None."""
     queue = await db.get_queue(chat_id)
     if not queue or len(queue) < 2:
         return None
@@ -555,7 +534,6 @@ async def skip_to_next(chat_id: int, client: Optional["Client"] = None) -> Optio
 
     next_track = queue[0]
 
-    # Refresh URL
     if next_track.get("webpage_url"):
         try:
             from helpers.downloader import fetch_track
