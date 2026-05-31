@@ -1,5 +1,12 @@
 """
-Core stream manager — pytgcalls (latest) + pyrogram 2.x
+Core stream manager — pytgcalls 3.0.0.dev28 + pyrogram 2.x
+
+Key responsibilities:
+- join / leave / change group call streams
+- FFmpeg filter chain (bass, speed, pitch, reverb, nightcore, volume)
+- on_stream_end: auto-advance queue with loop support
+- on_left_group_call: auto-reconnect
+- idle timer and NP-card updater tasks
 """
 from __future__ import annotations
 
@@ -7,14 +14,17 @@ import asyncio
 import time
 from typing import Optional, TYPE_CHECKING
 
-from pytgcalls import PyTgCalls, filters
+from pytgcalls import PyTgCalls
+from pytgcalls.exceptions import (
+    AlreadyJoinedError,
+    NoActiveGroupCall,
+    NotInGroupCallError,
+)
 from pytgcalls.types import (
     AudioQuality,
     MediaStream,
-    VideoQuality,
-    ChatUpdate,
+    VideoParameters,
 )
-from pytgcalls.exceptions import NoActiveGroupCall
 
 import database as db
 from helpers.logger import log
@@ -101,6 +111,7 @@ def get_pytgcalls() -> PyTgCalls:
 
 
 def init_stream(call: PyTgCalls, bot_client: "Client") -> None:
+    """Initialise the stream manager and register pytgcalls callbacks."""
     global _call, _bot_client
     _call = call
     _bot_client = bot_client
@@ -108,20 +119,23 @@ def init_stream(call: PyTgCalls, bot_client: "Client") -> None:
 
 
 def _register_callbacks(call: PyTgCalls) -> None:
+    """Register all pytgcalls event handlers on the instance."""
 
-    @call.on_update(filters.stream_end)
+    @call.on_stream_end()
     async def on_stream_end(_, update) -> None:
         chat_id: int = update.chat_id
         log.info(f"Stream ended in chat {chat_id}")
         await _handle_stream_end(chat_id)
 
-    @call.on_update(filters.chat_update(ChatUpdate.Status.KICKED | ChatUpdate.Status.LEFT_CALL | ChatUpdate.Status.CLOSED_VOICE_CHAT))
+    @call.on_left_group_call()
     async def on_left_call(_, update) -> None:
+        """Fired when the assistant is kicked or the VC ends externally."""
         chat_id: int = update.chat_id
-        log.warning(f"Left group call or VC closed in {chat_id}")
+        log.warning(f"Left group call in {chat_id}")
         active = _active_streams.get(chat_id)
         if not active:
             return
+        # Attempt auto-reconnect once
         await asyncio.sleep(3)
         try:
             media = _build_media_stream(active.track, active.elapsed, active)
@@ -135,6 +149,7 @@ def _register_callbacks(call: PyTgCalls) -> None:
 # ─── FFmpeg helpers ───────────────────────────────────────────────────────────
 
 def _build_ffmpeg_filter(stream: "ActiveStream") -> str:
+    """Build the FFmpeg audio filter chain string from active effects."""
     parts: list[str] = []
 
     if stream.bass > 0:
@@ -147,6 +162,7 @@ def _build_ffmpeg_filter(stream: "ActiveStream") -> str:
         pitch = 1.25
 
     if speed != 1.0:
+        # atempo only accepts 0.5–2.0; chain multiple for extreme values
         if speed < 0.5:
             speed = 0.5
         elif speed > 2.0:
@@ -173,9 +189,16 @@ def _build_media_stream(
     stream: Optional["ActiveStream"] = None,
     video: bool = False,
 ) -> MediaStream:
+    """Build a pytgcalls MediaStream object with optional FFmpeg filters."""
+    ffmpeg_extra = ""
+
+    # seek offset
     seek_part = f"-ss {seek}" if seek > 0 else ""
+
+    # filter chain
     filter_str = _build_ffmpeg_filter(stream) if stream else ""
     filter_part = f"-af \"{filter_str}\"" if filter_str else ""
+
     parts = [p for p in [seek_part, filter_part] if p]
     ffmpeg_extra = " ".join(parts)
 
@@ -183,7 +206,7 @@ def _build_media_stream(
         return MediaStream(
             track["url"],
             audio_quality=AudioQuality.STUDIO,
-            video_flags=VideoQuality.HD_720p,
+            video_parameters=VideoParameters(1280, 720, 30),
             ffmpeg_parameters=ffmpeg_extra or None,
         )
 
@@ -204,6 +227,7 @@ async def play(
     video: bool = False,
     seek: int = 0,
 ) -> None:
+    """Join or change to a stream in the given chat."""
     call = get_pytgcalls()
     stream = ActiveStream(chat_id, track, message_id)
     _active_streams[chat_id] = stream
@@ -213,11 +237,12 @@ async def play(
 
     try:
         await call.join_group_call(chat_id, media)
+    except AlreadyJoinedError:
+        await call.change_stream(chat_id, media)
+    except NoActiveGroupCall:
+        raise RuntimeError("No active voice chat in this group. Start one first.")
     except Exception:
-        try:
-            await call.change_stream(chat_id, media)
-        except Exception:
-            raise
+        raise
 
     if seek > 0:
         stream.seek_to(seek)
@@ -267,10 +292,13 @@ async def unmute(chat_id: int) -> bool:
 
 
 async def stop(chat_id: int, client: Optional["Client"] = None) -> None:
+    """Stop playback, clear queue, leave VC."""
     call = get_pytgcalls()
     _cleanup_chat(chat_id)
     try:
         await call.leave_group_call(chat_id)
+    except (NoActiveGroupCall, NotInGroupCallError):
+        pass
     except Exception as e:
         log.warning(f"stop(): leave_group_call error in {chat_id}: {e}")
     await db.clear_queue(chat_id)
@@ -291,6 +319,7 @@ async def seek(chat_id: int, seconds: int) -> bool:
 
 
 async def _apply_effects(chat_id: int) -> None:
+    """Re-stream from current position with updated FFmpeg filters."""
     stream = _active_streams.get(chat_id)
     if not stream:
         return
@@ -377,15 +406,20 @@ async def normalise(chat_id: int) -> bool:
     return True
 
 
-# ─── Stream-end handler ───────────────────────────────────────────────────────
+# ─── Stream-end handler (the critical piece) ──────────────────────────────────
 
 async def _handle_stream_end(chat_id: int) -> None:
+    """
+    Called by pytgcalls when a track finishes naturally.
+    Implements loop modes and auto-advances the queue.
+    """
     stream = _active_streams.get(chat_id)
     if not stream:
         return
 
     loop_mode = await db.get_setting(chat_id, "loop_mode")
 
+    # ── Loop: track ─────────────────────────────
     if loop_mode == "track":
         try:
             await play(chat_id, stream.track, message_id=stream.message_id,
@@ -394,28 +428,32 @@ async def _handle_stream_end(chat_id: int) -> None:
             log.warning(f"Loop-track replay failed in {chat_id}: {e}")
         return
 
+    # ── Loop: queue — move current to end ────────
     if loop_mode == "queue":
         queue = await db.get_queue(chat_id)
         if len(queue) > 1:
             current = queue[0]
             await db.remove_from_queue(chat_id, 1)
             await db.add_to_queue(chat_id, current)
+            # sync memory
             queue = await db.get_queue(chat_id)
             mem_set_queue(chat_id, queue)
 
+    # ── Advance to next track ────────────────────
     await db.add_to_history(chat_id, stream.track)
     await db.remove_from_queue(chat_id, 1)
     mem_pop_first(chat_id)
 
     next_queue = await db.get_queue(chat_id)
     if not next_queue:
+        # Queue empty
         _active_streams.pop(chat_id, None)
         set_inactive(chat_id)
         stop_np_updater(chat_id)
         vc247 = await db.get_setting(chat_id, "vc247")
         if vc247:
-            return
-
+            return  # Stay in VC, wait for next play command
+        # Idle leave
         async def _idle_leave(cid: int) -> None:
             if not _active_streams.get(cid):
                 try:
@@ -425,18 +463,15 @@ async def _handle_stream_end(chat_id: int) -> None:
                     pass
                 if _bot_client:
                     try:
-                        await _bot_client.send_message(
-                            cid,
-                            "⏹ <b>Queue Ended</b>\nAll songs played. Left the voice chat."
-                        )
+                        await _bot_client.send_message(cid, "🛑 **Qᴜᴇᴜᴇ ᴇɴᴅᴇᴅ.** Bᴏᴛ ʜᴀs ʟᴇғᴛ ᴛʜᴇ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ.")
                     except Exception:
                         pass
-
         start_idle_timer(chat_id, _idle_leave)
         return
 
     next_track = next_queue[0]
 
+    # Fetch fresh stream URL (URLs expire after ~6h)
     if next_track.get("webpage_url"):
         try:
             from helpers.downloader import fetch_track
@@ -453,6 +488,7 @@ async def _handle_stream_end(chat_id: int) -> None:
         log.error(f"Failed to play next track in {chat_id}: {e}")
         return
 
+    # Send NP card
     if _bot_client:
         try:
             await _send_np_card_internal(chat_id, next_track)
@@ -461,6 +497,7 @@ async def _handle_stream_end(chat_id: int) -> None:
 
 
 async def _send_np_card_internal(chat_id: int, track: dict) -> None:
+    """Send a Now Playing card (used internally after stream-end advances queue)."""
     from helpers.thumbnails import generate_now_playing_card
     from helpers.pinmanager import pin_message
     from plugins.utils import now_playing_keyboard
@@ -470,6 +507,8 @@ async def _send_np_card_internal(chat_id: int, track: dict) -> None:
     if not client:
         return
 
+    me = await client.get_me()
+
     buf = await generate_now_playing_card(
         title=track["title"],
         uploader=track.get("uploader", "Unknown"),
@@ -477,16 +516,21 @@ async def _send_np_card_internal(chat_id: int, track: dict) -> None:
         requester=track.get("requester", "Unknown"),
         elapsed=0,
         duration=track.get("duration", 0),
+        bot_name=me.first_name if me else "Jatt Music"
     )
     kb = now_playing_keyboard(chat_id)
+    
+    caption = (
+        f"⏤͟͟͞͞★ **{me.first_name.upper() if me else 'JATT MUSIC'} Sᴛʀᴇᴀᴍɪɴɢ**\n\n"
+        f"✧ **Sᴏɴɢ :** [{track['title'][:40]}]({track.get('webpage_url', '')})\n"
+        f"✧ **Tɪᴍᴇ :** `{format_duration(track.get('duration', 0))}`\n"
+        f"✧ **Rᴇǫᴜᴇsᴛ :** {track.get('requester', 'Unknown')}"
+    )
+    
     np_msg = await client.send_photo(
         chat_id,
         photo=buf,
-        caption=(
-            f"<b>Now Playing</b>\n"
-            f"<b>{track['title']}</b>\n"
-            f"{format_duration(track.get('duration', 0))}"
-        ),
+        caption=caption,
         reply_markup=kb,
     )
     stream = _active_streams.get(chat_id)
@@ -502,6 +546,7 @@ def get_active(chat_id: int) -> Optional[ActiveStream]:
 
 
 async def skip_to_next(chat_id: int, client: Optional["Client"] = None) -> Optional[dict]:
+    """Manually skip to the next track. Returns the new track or None."""
     queue = await db.get_queue(chat_id)
     if not queue or len(queue) < 2:
         return None
@@ -517,6 +562,7 @@ async def skip_to_next(chat_id: int, client: Optional["Client"] = None) -> Optio
 
     next_track = queue[0]
 
+    # Refresh URL
     if next_track.get("webpage_url"):
         try:
             from helpers.downloader import fetch_track
